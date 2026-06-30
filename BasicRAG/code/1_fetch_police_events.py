@@ -12,12 +12,12 @@ headers = {
     "User-agent" : "your-agent" # For transparency
 }
 
-# response = requests.get(url=url, headers=headers)
+response = requests.get(url=url, headers=headers)
 
-# json_data = json.dumps(response.json(), indent=4)
-# with open("police_events.json", "w") as f:
-#     f.write(json_data)
-#     f.close()
+json_data = json.dumps(response.json(), indent=4)
+with open("police_events.json", "w") as f:
+     f.write(json_data)
+     f.close()
 
 
 
