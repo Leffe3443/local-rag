@@ -20,10 +20,10 @@ with open("police_events.json", "w") as f:
      f.close()
 
 
-
-# # Try connecting to the default 'postgres' database instead of 'events_db'
 with open("../police_events.json") as f:
     data = json.load(f)  # this is your list of dicts
+
+# # Try connecting to the default 'postgres' database instead of 'events_db'
 
 print("Connecting...")
 
