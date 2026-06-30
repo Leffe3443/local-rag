@@ -1,0 +1,258 @@
+# docker-compose.yml
+# ═════════════════════════════════════════════════════════════════════════════
+# LOCAL RAG SETUP — Postgres + pgvector + Ollama
+#
+# This file orchestrates two Docker containers:
+#   1. rag-postgres: PostgreSQL 16 with pgvector extension for vector search
+#   2. rag-ollama:   Ollama runtime for embedding and LLM models
+#
+# Both containers run on your machine, exposing ports to localhost so your
+# Python scripts can connect as if they were native services.
+#
+# Compose file reference: https://docs.docker.com/compose/compose-file/
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ⚠️  CRITICAL: CREDENTIALS MUST MATCH IN THREE PLACES
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# The user/password/db you set below must be IDENTICAL in all three of:
+#   1. This file's `environment:` block (defines what Postgres creates)
+#   2. This file's `healthcheck:` test (must use a user that exists)
+#   3. Your .env file (what Python uses to connect)
+#
+# Common mistake that causes "role does not exist" or connection errors:
+#   Setting POSTGRES_USER: username3 here, but then running
+#   `psql -U postgres` — the `postgres` superuser is NOT created when you
+#   override POSTGRES_USER. Only the user you specify gets created.
+#
+# This config uses ONE user everywhere: see CURRENT VALUES below.
+#
+# Postgres official image docs (how these env vars behave):
+#   https://hub.docker.com/_/postgres  (see "Environment Variables" section)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# CURRENT VALUES (must match your .env exactly):
+#   DB_USER=username3
+#   DB_PASSWORD=testpassword123
+#   DB_NAME=events_db
+#
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# COMMON DOCKER COMPOSE COMMANDS
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# docker compose up -d
+#   "up" = start the containers defined in this file
+#   "-d" = detached (run in background, return control to terminal immediately)
+#   First time: pulls images from Docker Hub, creates containers, starts them
+#   Subsequent times: reuses existing containers if they haven't been deleted
+#   Data in volumes (./pgdata, ./ollama-data) persists across up/down cycles
+#   Docs: https://docs.docker.com/reference/cli/docker/compose/up/
+#
+# docker compose down
+#   Stop all containers defined in this file
+#   Containers are deleted, but data in ./pgdata and ./ollama-data remains
+#   Use this for safe shutdowns — data is NOT lost
+#   Docs: https://docs.docker.com/reference/cli/docker/compose/down/
+#
+# docker compose down -v
+#   Stop all containers AND delete all volumes
+#   WARNING: This deletes ./pgdata and ./ollama-data entirely
+#   Use only if you want a completely fresh start (lose all data and models)
+#   After this, you'll need to re-embed your database rows and re-pull models
+#   IMPORTANT: You MUST run this (not just `down`) whenever you change the
+#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB values, because those are
+#   only read on first init when ./pgdata is empty. See note in environment: below.
+#
+# docker compose ps
+#   List all containers started by this file, showing their status
+#   Shows if they're "Up" (running) or "Exited" (stopped)
+#   Example output: rag-postgres UP, rag-ollama UP
+#
+# docker compose logs -f
+#   View live logs from all containers (like tail -f on multiple files)
+#   "-f" = follow (keep showing new logs as they appear)
+#   Useful for debugging: watch what happens when containers start
+#   Press Ctrl+C to stop following (containers keep running)
+#   Look for: "database system is ready to accept connections" = Postgres is up
+#   Examples: docker compose logs -f postgres   (just Postgres)
+#            docker compose logs -f ollama      (just Ollama)
+#
+# docker compose logs postgres
+#   View historical logs from just the Postgres container (no -f, shows past only)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# USEFUL DEBUGGING COMMANDS
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# docker exec -it rag-postgres psql -U postgres -d events_db
+#   Open an interactive psql shell INSIDE the container.
+#   "-it" = interactive + allocate a terminal (needed for an interactive shell)
+#   Use the SAME user you defined in POSTGRES_USER below.
+#   Quick connectivity test:
+#     docker exec rag-postgres psql -U postgres -d events_db -c "SELECT 1"
+#   psql docs: https://www.postgresql.org/docs/current/app-psql.html
+#
+# docker volume ls
+#   List all Docker volumes. After `down -v` you should NOT see this project's
+#   volumes. If lingering data is causing stale-credential issues, check here.
+#   Docs: https://docs.docker.com/reference/cli/docker/volume/ls/
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PULLING MODELS INTO OLLAMA (one-time, after first docker compose up -d)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# docker exec rag-ollama ollama pull nomic-embed-text
+#   "exec" = run a command inside a running container (like SSH into a box)
+#   "rag-ollama" = the container name (defined below as container_name)
+#   "ollama pull nomic-embed-text" = the command to run inside it
+#   Result: downloads the 768-dimensional embedding model (~274MB) into the
+#           container's ./ollama-data volume
+#   Takes ~2 minutes on first run (network speed dependent)
+#   Model library: https://ollama.com/library
+#
+# docker exec rag-ollama ollama pull llama3.2
+#   Same pattern: pulls the chat/LLM model (~2GB) into the container
+#   Takes longer due to size, but only happens once
+#   Ollama Docker docs: https://hub.docker.com/r/ollama/ollama
+#
+# After both pulls complete, both models are cached in ./ollama-data and
+# available for your Python scripts to use via localhost:11434
+#
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # POSTGRES SERVICE
+  # ─────────────────────────────────────────────────────────────────────────
+  postgres:
+    # image: which Docker image to run
+    #   pgvector/pgvector:pg16 = the OFFICIAL pgvector image, Postgres 16 with
+    #   pgvector pre-compiled. (pgvector adds the `vector` column type and the
+    #   <=> cosine distance operator used for similarity search.)
+    #   If this image isn't cached locally, Docker downloads it automatically.
+    #   Image:   https://hub.docker.com/r/pgvector/pgvector
+    #   Project: https://github.com/pgvector/pgvector
+    image: pgvector/pgvector:pg16
+
+    # container_name: human-readable name for this container
+    #   Used in docker commands (docker exec rag-postgres psql...)
+    #   Used in logging (docker compose logs postgres)
+    #   Used in inter-container networking (postgres:5432 from ollama's view)
+    container_name: rag-postgres
+
+    # environment: environment variables passed into the container.
+    #   The official Postgres image reads these ON FIRST INIT ONLY — that is,
+    #   only when the data directory (./pgdata) is empty. On later starts the
+    #   database already exists, so these are IGNORED.
+    #   ⇒ To change any credential, you must wipe data first:
+    #       docker compose down -v   (then) docker compose up -d
+    #   Env var reference: https://hub.docker.com/_/postgres
+    environment:
+      LANG: en_US.utf8
+      LC_ALL: en_US.utf8
+      POSTGRES_INITDB_ARGS: "--locale=en_US.UTF-8"
+
+      # POSTGRES_USER: the superuser created on first init.
+      #   ⚠️ This REPLACES the default "postgres" superuser — if you set this to
+      #   username3, then a user called "postgres" will NOT exist, and
+      #   `psql -U postgres` will fail with: role "postgres" does not exist.
+      #   Always connect with THIS username everywhere (psql, healthcheck, .env).
+      #   Must match .env: DB_USER=username3
+      #POSTGRES_USER: username3 - default is "postgres" if left blank
+
+      # POSTGRES_PASSWORD: password for POSTGRES_USER above.
+      #   Keep it simple: ASCII letters + digits only. Avoid % and other symbols
+      #   while learning — they can complicate connection strings and shells.
+      #   Must match .env: DB_PASSWORD=testpassword123
+      POSTGRES_PASSWORD: testpassword123
+
+      # POSTGRES_DB: a database created on first init, owned by POSTGRES_USER.
+      #   Must match .env: DB_NAME=events_db
+      POSTGRES_DB: events_db
+
+    # ports: publish a container port to your Windows host.
+    #   Format: "HOST_port:CONTAINER_port"
+    #   This is what lets Python (running on Windows) reach the DB at
+    #   localhost:5432 even though Postgres lives inside the container.
+    #   If 5432 is taken on Windows (e.g. a native Postgres install), change the
+    #   HOST side: "5433:5432", then set DB_PORT=5433 in .env.
+    #   Docs: https://docs.docker.com/compose/how-tos/networking/#ports
+    ports:
+      - "5432:5432"
+
+    # volumes: mount a host directory into the container for persistence.
+    #   Format: "HOST_path:CONTAINER_path"
+    #   ./pgdata (on Windows) <-> /var/lib/postgresql/data (where PG stores data)
+    #   Without this, all data would vanish when the container is removed.
+    #   This is also why changing credentials requires `down -v` — the existing
+    #   ./pgdata already has the old user baked in.
+    #   Docs: https://docs.docker.com/storage/volumes/
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+
+    # networks: attach this container to our custom bridge network.
+    #   Containers on the same network resolve each other by container_name.
+    #   Docs: https://docs.docker.com/compose/how-tos/networking/
+    networks:
+      - rag-net
+
+    # healthcheck: a command Docker runs periodically to verify readiness.
+    #   Containers can be "started" before Postgres is actually accepting
+    #   connections; this distinguishes "running" from "ready".
+    #   pg_isready docs: https://www.postgresql.org/docs/current/app-pg-isready.html
+    #   Compose healthcheck docs:
+    #     https://docs.docker.com/reference/compose-file/services/#healthcheck
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d events_db"]
+      interval: 5s
+      retries: 5
+
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # OLLAMA SERVICE
+  # ─────────────────────────────────────────────────────────────────────────
+  ollama:
+    # image: the official Ollama image — a local runtime for open LLMs.
+    #   Image: https://hub.docker.com/r/ollama/ollama
+    #   Docs:  https://github.com/ollama/ollama/blob/main/docs/docker.md
+    image: ollama/ollama
+
+    # container_name: used in `docker exec rag-ollama ollama pull ...`
+    container_name: rag-ollama
+
+    # ports: publish Ollama's HTTP API to the Windows host.
+    #   Your Python ollama SDK talks to http://localhost:11434 by default.
+    #   API reference: https://github.com/ollama/ollama/blob/main/docs/api.md
+    ports:
+      - "11434:11434"
+
+    # volumes: persist downloaded models so they aren't re-downloaded each run.
+    #   ./ollama-data (Windows) <-> /root/.ollama (where Ollama stores models)
+    #   nomic-embed-text ~274MB, llama3.2 ~2GB — you don't want to refetch these.
+    volumes:
+      - ./ollama-data:/root/.ollama
+
+    # networks: same bridge network as Postgres (good practice; not required here)
+    networks:
+      - rag-net
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CUSTOM NETWORK DEFINITION
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A user-defined bridge network. Containers attached to it can reach each other
+# by container_name as a hostname (e.g. postgres:5432, ollama:11434).
+# Your Python runs on the Windows HOST, so it uses localhost + the published
+# ports above rather than these internal names.
+# Docs: https://docs.docker.com/engine/network/drivers/bridge/
+#
+networks:
+  rag-net:
+    driver: bridge
